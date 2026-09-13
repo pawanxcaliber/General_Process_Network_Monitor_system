@@ -3,6 +3,7 @@ pub mod gpu;
 pub mod host;
 pub mod netmap;
 pub mod ping;
+pub mod platform;
 pub mod ports;
 pub mod procnet;
 pub mod temp;

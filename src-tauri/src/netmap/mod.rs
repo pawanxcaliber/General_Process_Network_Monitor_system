@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -20,8 +20,41 @@ struct RawSock {
     lport: u16,
     rip: String,
     rport: u16,
-    state: String,
-    inode: String,
+    listening: bool,
+    established: bool,
+    pid: Option<u32>,
+    label: Option<String>,
+    sent: u64,
+    recv: u64,
+}
+
+fn ip_string(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V6(v6) => v6.to_canonical().to_string(),
+        IpAddr::V4(v4) => v4.to_string(),
+    }
+}
+
+/// Reads all sockets from the platform layer into the map's raw form.
+fn read_sockets() -> Vec<RawSock> {
+    crate::platform::sockets::connections()
+        .into_iter()
+        .map(|c| RawSock {
+            lip: ip_string(c.local_ip),
+            lport: c.local_port,
+            rip: c
+                .remote_ip
+                .map(ip_string)
+                .unwrap_or_else(|| "0.0.0.0".to_string()),
+            rport: c.remote_port,
+            listening: c.listening,
+            established: c.established,
+            pid: c.pid,
+            label: c.label,
+            sent: c.tx_bytes.unwrap_or(0),
+            recv: c.rx_bytes.unwrap_or(0),
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -160,18 +193,13 @@ impl Collector {
         let dt = self.tick.elapsed().as_secs_f64().max(0.001);
         self.tick = now;
 
-        let mut socks: Vec<RawSock> = Vec::new();
-        read_proc_tcp("/proc/net/tcp", &mut socks);
-        read_proc_tcp("/proc/net/tcp6", &mut socks);
-
-        let (inode_map, _proc_meta) = scan_pids();
-        let ss_stats = read_ss_stats();
+        let socks = read_sockets();
 
         let mut endpoints: HashMap<String, Endpoint> = HashMap::new();
         let mut relay_ports: HashSet<u16> = HashSet::new();
 
         for s in &socks {
-            let entity = match resolve_local(s, &inode_map, ip_refs) {
+            let entity = match resolve_local(s, ip_refs) {
                 Some(e) => e,
                 None => {
                     relay_ports.insert(s.lport);
@@ -183,7 +211,7 @@ impl Collector {
                 entity,
                 listeners: Vec::new(),
             });
-            if s.state == "0A" && !entry.listeners.contains(&s.lport) {
+            if s.listening && !entry.listeners.contains(&s.lport) {
                 entry.listeners.push(s.lport);
             }
         }
@@ -193,19 +221,13 @@ impl Collector {
         let mut seen_keys: HashSet<String> = HashSet::new();
 
         for s in &socks {
-            if s.state != "01" {
+            if !s.established {
                 continue;
             }
-            let key = format!(
-                "{}:{}|{}:{}",
-                s.lip, s.lport, s.rip, s.rport
-            );
+            let key = format!("{}:{}|{}:{}", s.lip, s.lport, s.rip, s.rport);
             seen_keys.insert(key.clone());
 
-            let (cur_sent, cur_recv) = match ss_stats.get(&key) {
-                Some((a, b)) => (*a, *b),
-                None => continue,
-            };
+            let (cur_sent, cur_recv) = (s.sent, s.recv);
 
             let (d_sent, d_recv) = match self.conns.get(&key) {
                 Some((ps, pr, _)) => (
@@ -221,7 +243,7 @@ impl Collector {
                 .get(&format!("{}:{}", s.lip, s.lport))
                 .map(|e| e.entity.clone())
                 .unwrap_or(Entity::Root);
-            let remote_entity = resolve_remote(s, &endpoints, &inode_map, ip_refs);
+            let remote_entity = resolve_remote(s, &endpoints, ip_refs);
 
             let (a, b) = (&local_entity, &remote_entity);
             if a.id() == b.id() {
@@ -517,17 +539,16 @@ pub async fn gather_ip_refs(snapshots: &SnapshotsMap) -> IpRefs {
     IpRefs { containers, pods, published, alive }
 }
 
-fn resolve_local(
-    s: &RawSock,
-    inode_map: &HashMap<String, (u32, String)>,
-    ip_refs: &IpRefs,
-) -> Option<Entity> {
-    if let Some((pid, label)) = inode_map.get(&s.inode) {
-        let detail = proc_detail(*pid);
+fn resolve_local(s: &RawSock, ip_refs: &IpRefs) -> Option<Entity> {
+    if let Some(pid) = s.pid {
+        let label = s
+            .label
+            .clone()
+            .unwrap_or_else(|| format!("pid {}", pid));
         return Some(Entity::Proc {
-            pid: *pid,
-            label: label.clone(),
-            detail,
+            pid,
+            label,
+            detail: proc_detail(pid),
         });
     }
     ip_refs.published.get(&s.lport).cloned()
@@ -536,7 +557,6 @@ fn resolve_local(
 fn resolve_remote(
     s: &RawSock,
     endpoints: &HashMap<String, Endpoint>,
-    inode_map: &HashMap<String, (u32, String)>,
     ip_refs: &IpRefs,
 ) -> Entity {
     let remote_key = format!("{}:{}", s.rip, s.rport);
@@ -560,8 +580,12 @@ fn resolve_remote(
     if let Some(e) = ip_refs.pods.get(&s.rip) {
         return e.clone();
     }
-    if let Some((pid, label)) = inode_map.get(&s.inode).cloned() {
+    if let Some(pid) = s.pid {
         if is_local_ip(&s.rip) {
+            let label = s
+                .label
+                .clone()
+                .unwrap_or_else(|| format!("pid {}", pid));
             return Entity::Proc {
                 pid,
                 label,
@@ -600,156 +624,6 @@ fn proc_detail(pid: u32) -> Option<String> {
     } else {
         Some(trimmed)
     }
-}
-
-fn parse_addr(raw: &str) -> Option<(String, u16)> {
-    let (ip_hex, port_hex) = raw.split_once(':')?;
-    let port = u16::from_str_radix(port_hex, 16).ok()?;
-    let ip = match ip_hex.len() {
-        8 => {
-            let b = hex_bytes(ip_hex)?;
-            Some(IpAddr::V4(Ipv4Addr::new(b[3], b[2], b[1], b[0])))
-        }
-        32 => {
-            let mut bytes = [0u8; 16];
-            let hb = hex_bytes(ip_hex)?;
-            for w in 0..4 {
-                for i in 0..4 {
-                    bytes[w * 4 + i] = hb[w * 4 + (3 - i)];
-                }
-            }
-            let v6 = Ipv6Addr::from(bytes);
-            Some(v6.to_canonical())
-        }
-        _ => None,
-    }?;
-    Some((ip.to_string(), port))
-}
-
-fn hex_bytes(s: &str) -> Option<Vec<u8>> {
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
-}
-
-fn read_proc_tcp(path: &str, out: &mut Vec<RawSock>) {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return;
-    };
-    for line in content.lines().skip(1) {
-        let f: Vec<&str> = line.split_whitespace().collect();
-        if f.len() < 10 {
-            continue;
-        }
-        let (Some((lip, lport)), Some((rip, rport))) =
-            (parse_addr(f[1]), parse_addr(f[2]))
-        else {
-            continue;
-        };
-        out.push(RawSock {
-            lip,
-            lport,
-            rip,
-            rport,
-            state: f[3].to_string(),
-            inode: f[9].to_string(),
-        });
-    }
-}
-
-fn scan_pids() -> (HashMap<String, (u32, String)>, HashMap<u32, String>) {
-    let mut inode_map: HashMap<String, (u32, String)> = HashMap::new();
-    let mut meta: HashMap<u32, String> = HashMap::new();
-
-    let Ok(procs) = std::fs::read_dir("/proc") else {
-        return (inode_map, meta);
-    };
-    for entry in procs.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        let Ok(pid) = name.parse::<u32>() else {
-            continue;
-        };
-        let comm = std::fs::read_to_string(format!("/proc/{}/comm", pid))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-        let label = if comm.is_empty() {
-            format!("pid {}", pid)
-        } else {
-            comm.clone()
-        };
-        meta.insert(pid, label.clone());
-
-        let Ok(fds) = std::fs::read_dir(format!("/proc/{}/fd", pid)) else {
-            continue;
-        };
-        for fd in fds.flatten() {
-            let Ok(link) = std::fs::read_link(fd.path()) else {
-                continue;
-            };
-            let link = link.to_string_lossy().to_string();
-            if let Some(rest) = link.strip_prefix("socket:[") {
-                let inode = rest.trim_end_matches(']').to_string();
-                inode_map
-                    .entry(inode)
-                    .or_insert((pid, label.clone()));
-            }
-        }
-    }
-    (inode_map, meta)
-}
-
-fn parse_ss_addr(raw: &str) -> Option<(String, u16)> {
-    let (ip_part, port) = raw.rsplit_once(':')?;
-    let port = port.parse::<u16>().ok()?;
-    let ip_part = ip_part.trim_matches(|c| c == '[' || c == ']');
-    if let Ok(v4) = ip_part.parse::<Ipv4Addr>() {
-        return Some((v4.to_string(), port));
-    }
-    if let Ok(v6) = ip_part.parse::<Ipv6Addr>() {
-        return Some((v6.to_canonical().to_string(), port));
-    }
-    Some((ip_part.to_string(), port))
-}
-
-fn read_ss_stats() -> HashMap<String, (u64, u64)> {
-    let mut map: HashMap<String, (u64, u64)> = HashMap::new();
-    let Ok(output) = std::process::Command::new("ss").args(["-tinH"]).output() else {
-        return map;
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut current: Option<String> = None;
-
-    for line in stdout.lines() {
-        if line.starts_with(char::is_whitespace) {
-            let Some(ref key) = current else { continue };
-            let (mut sent, mut recv) = (0u64, 0u64);
-            for tok in line.split_whitespace() {
-                if let Some(v) = tok.strip_prefix("bytes_sent:") {
-                    sent = v.parse().unwrap_or(0);
-                } else if let Some(v) = tok.strip_prefix("bytes_received:") {
-                    recv = v.parse().unwrap_or(0);
-                } else if let Some(v) = tok.strip_prefix("bytes_acked:") {
-                    if sent == 0 {
-                        sent = v.parse().unwrap_or(0);
-                    }
-                }
-            }
-            if sent > 0 || recv > 0 {
-                map.insert(key.clone(), (sent, recv));
-            }
-        } else {
-            let f: Vec<&str> = line.split_whitespace().collect();
-            if f.len() >= 5 {
-                if let (Some((lip, lport)), Some((rip, rport))) =
-                    (parse_ss_addr(f[3]), parse_ss_addr(f[4]))
-                {
-                    current = Some(format!("{}:{}|{}:{}", lip, lport, rip, rport));
-                }
-            }
-        }
-    }
-    map
 }
 
 fn cap_external(
