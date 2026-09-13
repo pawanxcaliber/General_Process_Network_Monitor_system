@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --s50: 15 23 42;
+  --s100: 30 41 59;
+  --s700: 148 163 184;
+  --s800: 203 213 225;
+  --s900: 255 255 255;
+  --s950: 241 245 249;
+  --ink-50: 15 23 42;
+  --ink-100: 30 41 59;
+  --ink-700: 71 85 105;
+  --ink-800: 100 116 139;
+  --ok: 21 128 61;
+  --info: 37 99 235;
+  --warn: 180 83 9;
+  --bad: 220 38 38;
+  --grape: 124 58 237;
+  --edge: 148 163 184;
+  --chart-grid: 226 232 240;
+}
+
+.dark {
+  --s50: 248 250 252;
+  --s100: 241 245 249;
+  --s700: 51 65 85;
+  --s800: 30 41 59;
+  --s900: 15 23 42;
+  --s950: 2 6 23;
+  --ink-50: 248 250 252;
+  --ink-100: 226 232 240;
+  --ink-700: 148 163 184;
+  --ink-800: 100 116 139;
+  --ok: 74 222 128;
+  --info: 96 165 250;
+  --warn: 251 191 36;
+  --bad: 248 113 113;
+  --grape: 167 139 250;
+  --edge: 71 85 105;
+  --chart-grid: 22 32 47;
+}
+
+@keyframes dash {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: rgb(var(--ink-50));
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgb(var(--s900));
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--s800));
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--s700));
+}
+
+.u-legend {
+  color: rgb(var(--ink-700)) !important;
+  font-size: 10px;
+  background: transparent;
+}
+
+.u-legend .u-marker {
+  height: 6px;
+  width: 6px;
+}

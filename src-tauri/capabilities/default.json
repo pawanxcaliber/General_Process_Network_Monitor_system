@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Core IPC permissions for the Monitor app",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
