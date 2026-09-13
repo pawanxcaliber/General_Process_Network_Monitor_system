@@ -5,6 +5,7 @@ pub mod netmap;
 pub mod ping;
 pub mod ports;
 pub mod procnet;
+pub mod temp;
 pub mod topology;
 pub mod types;
 
@@ -149,6 +150,8 @@ pub fn run() {
                 Arc::new(RwLock::new(gpu::GpuSnapshot::default()));
             let sort_key: Arc<RwLock<ProcessSortKey>> =
                 Arc::new(RwLock::new(ProcessSortKey::Cpu));
+            let temp_cache: Arc<RwLock<temp::TempSnapshot>> =
+                Arc::new(RwLock::new(temp::TempSnapshot::default()));
 
             app.manage(AppState {
                 states: states.clone(),
@@ -164,9 +167,22 @@ pub fn run() {
             let ping_task = ping_cache.clone();
             let gpu_task = gpu_cache.clone();
             let sort_task = sort_key.clone();
+            let temp_task = temp_cache.clone();
             tauri::async_runtime::spawn(async move {
-                host::start_host_polling(host_app, host_cache_task, ping_task, gpu_task, sort_task)
-                    .await;
+                host::start_host_polling(
+                    host_app,
+                    host_cache_task,
+                    ping_task,
+                    gpu_task,
+                    temp_task,
+                    sort_task,
+                )
+                .await;
+            });
+
+            let temp_cache_task = temp_cache.clone();
+            tauri::async_runtime::spawn(async move {
+                temp::start_temp_poll(temp_cache_task).await;
             });
 
             let ping_cache_task = ping_cache.clone();

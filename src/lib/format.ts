@@ -5,6 +5,18 @@ export function fmtBytes(n: number, digits = 1): string {
   return `${(n / 1024 ** i).toFixed(i === 0 ? 0 : digits)} ${units[i]}`;
 }
 
+/// Memory formatting: below 1 MB in KB, at/above 1 MB with decimals.
+export function fmtMem(n: number): string {
+  if (!isFinite(n) || n <= 0) return "0 B";
+  const KB = 1024;
+  const MB = KB * 1024;
+  const GB = MB * 1024;
+  if (n < KB) return `${Math.round(n)} B`;
+  if (n < MB) return `${Math.round(n / KB)} KB`;
+  if (n < GB) return `${(n / MB).toFixed(1)} MB`;
+  return `${(n / GB).toFixed(2)} GB`;
+}
+
 export function fmtBps(n: number): string {
   return `${fmtBytes(n)}/s`;
 }

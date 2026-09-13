@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 :root {
+  color-scheme: light;
   --s50: 15 23 42;
   --s100: 30 41 59;
   --s700: 148 163 184;
@@ -23,6 +24,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --s50: 248 250 252;
   --s100: 241 245 249;
   --s700: 51 65 85;

@@ -22,6 +22,7 @@ pub async fn start_host_polling(
     cache: Arc<RwLock<HostPayload>>,
     ping_cache: Arc<RwLock<Option<f64>>>,
     gpu_cache: Arc<RwLock<crate::gpu::GpuSnapshot>>,
+    temp_cache: Arc<RwLock<crate::temp::TempSnapshot>>,
     sort_key: Arc<RwLock<ProcessSortKey>>,
 ) {
     let mut sys = System::new_all();
@@ -53,6 +54,9 @@ pub async fn start_host_polling(
         disk_read_bps: vec![0.0],
         disk_write_bps: vec![0.0],
         ping_ms: vec![],
+        cpu_temp_c: vec![],
+        gpu_igpu_used_bytes: vec![],
+        gpu_dgpu_used_bytes: vec![],
     };
 
     loop {
@@ -149,6 +153,7 @@ pub async fn start_host_polling(
         let proc_net = crate::procnet::sample(&mut procnet, elapsed).await;
         let gpu_snap = gpu_cache.read().await.clone();
         let ping_ms = *ping_cache.read().await;
+        let temp_snap = temp_cache.read().await.clone();
         let sort = *sort_key.read().await;
 
         let mut processes: Vec<ProcessInfo> = sys
@@ -183,6 +188,17 @@ pub async fn start_host_polling(
         if let Some(ms) = ping_ms {
             push_capped(&mut history.ping_ms, ms);
         }
+        if let Some(t) = temp_snap.cpu_c {
+            push_capped(&mut history.cpu_temp_c, t);
+        }
+        push_capped(
+            &mut history.gpu_igpu_used_bytes,
+            gpu_snap.igpu_used_bytes as f64,
+        );
+        push_capped(
+            &mut history.gpu_dgpu_used_bytes,
+            gpu_snap.dgpu_used_bytes as f64,
+        );
 
         let payload = HostPayload {
             timestamp: chrono::Utc::now().timestamp_millis() as f64,
@@ -197,6 +213,7 @@ pub async fn start_host_polling(
             ports: crate::ports::listening_ports(),
             processes,
             ping_ms,
+            cpu_temp_c: temp_snap.cpu_c,
             gpu_igpu_used_bytes: gpu_snap.igpu_used_bytes,
             gpu_dgpu_used_bytes: gpu_snap.dgpu_used_bytes,
             gpu_igpu_present: gpu_snap.igpu_present,

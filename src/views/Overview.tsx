@@ -2,7 +2,7 @@ import { Component, For, Show } from "solid-js";
 import { A } from "@solidjs/router";
 import { hostStore } from "@/stores/hostStore";
 import { runtimeStore } from "@/stores/runtimeStore";
-import { fmtBps, fmtBytes, fmtPct } from "@/lib/format";
+import { fmtBps, fmtBytes, fmtMem, fmtPct } from "@/lib/format";
 import { portOwner } from "@/lib/ports";
 import { Sparkline } from "@/components/charts/Sparkline";
 import { LineChart } from "@/components/charts/LineChart";
@@ -10,6 +10,8 @@ import { LineChart } from "@/components/charts/LineChart";
 const GREEN = "#22c55e";
 const BLUE = "#3b82f6";
 const AMBER = "#f59e0b";
+const RED = "#ef4444";
+const PURPLE = "#a78bfa";
 
 const RUNTIME_META: Array<{ kind: "docker" | "podman" | "kubernetes" | "vm"; label: string; href: string }> = [
   { kind: "docker", label: "Docker", href: "/docker" },
@@ -32,6 +34,15 @@ export const Overview: Component = () => {
     return "text-ok";
   };
 
+  const temp = () => host()?.cpu_temp_c ?? null;
+  const tempColor = () => {
+    const t = temp();
+    if (t == null) return "text-ink-700";
+    if (t >= 80) return "text-bad";
+    if (t >= 60) return "text-warn";
+    return "text-ok";
+  };
+
   return (
     <div class="p-5 space-y-5">
       <div>
@@ -39,7 +50,7 @@ export const Overview: Component = () => {
         <p class="text-xs text-ink-700">Everything running on this machine, at a glance</p>
       </div>
 
-      <div class="grid grid-cols-5 gap-4">
+      <div class="grid grid-cols-6 gap-4">
         <div class="bg-surface-900 border border-surface-800 rounded-lg p-4">
           <span class="text-xs text-ink-700 uppercase tracking-wider">Host CPU</span>
           <div class="text-3xl font-semibold mt-1">{fmtPct(host()?.cpu_percent ?? 0, 0)}</div>
@@ -65,6 +76,15 @@ export const Overview: Component = () => {
         </div>
 
         <div class="bg-surface-900 border border-surface-800 rounded-lg p-4">
+          <span class="text-xs text-ink-700 uppercase tracking-wider">Temp</span>
+          <div class={`text-3xl font-semibold mt-1 ${tempColor()}`}>
+            {temp() == null ? "—" : `${temp()!.toFixed(1)}°`}
+            <span class="text-sm font-normal text-ink-700">C</span>
+          </div>
+          <Sparkline data={hist()?.cpu_temp_c ?? []} color={RED} height={44} />
+        </div>
+
+        <div class="bg-surface-900 border border-surface-800 rounded-lg p-4">
           <span class="text-xs text-ink-700 uppercase tracking-wider">iGPU</span>
           <Show
             when={host()?.gpu_igpu_present}
@@ -73,9 +93,10 @@ export const Overview: Component = () => {
             }
           >
             <div class="text-2xl font-semibold mt-2">
-              {fmtBytes(host()?.gpu_igpu_used_bytes ?? 0, 0)}
+              {fmtMem(host()?.gpu_igpu_used_bytes ?? 0)}
             </div>
           </Show>
+          <Sparkline data={hist()?.gpu_igpu_used_bytes ?? []} color={GREEN} height={44} />
           <div class="text-[10px] text-ink-800 mt-3">integrated GPU memory</div>
         </div>
 
@@ -88,9 +109,10 @@ export const Overview: Component = () => {
             }
           >
             <div class="text-2xl font-semibold mt-2">
-              {fmtBytes(host()?.gpu_dgpu_used_bytes ?? 0, 0)}
+              {fmtMem(host()?.gpu_dgpu_used_bytes ?? 0)}
             </div>
           </Show>
+          <Sparkline data={hist()?.gpu_dgpu_used_bytes ?? []} color={PURPLE} height={44} />
           <div class="text-[10px] text-ink-800 mt-3">
             {host()?.gpu_dgpu_driver_unavailable
               ? "driver not loaded"

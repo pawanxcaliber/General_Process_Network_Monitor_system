@@ -128,6 +128,7 @@ pub struct HostPayload {
     pub ports: Vec<PortInfo>,
     pub processes: Vec<ProcessInfo>,
     pub ping_ms: Option<f64>,
+    pub cpu_temp_c: Option<f64>,
     pub gpu_igpu_used_bytes: u64,
     pub gpu_dgpu_used_bytes: u64,
     pub gpu_igpu_present: bool,
@@ -159,6 +160,9 @@ pub struct HostHistory {
     pub disk_read_bps: Vec<f64>,
     pub disk_write_bps: Vec<f64>,
     pub ping_ms: Vec<f64>,
+    pub cpu_temp_c: Vec<f64>,
+    pub gpu_igpu_used_bytes: Vec<f64>,
+    pub gpu_dgpu_used_bytes: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

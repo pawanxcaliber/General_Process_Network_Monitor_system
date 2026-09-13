@@ -76,6 +76,7 @@ export interface HostPayload {
   ports: PortInfo[];
   processes: ProcessInfo[];
   ping_ms?: number | null;
+  cpu_temp_c?: number | null;
   gpu_igpu_used_bytes?: number | null;
   gpu_dgpu_used_bytes?: number | null;
   gpu_igpu_present?: boolean;
@@ -116,6 +117,9 @@ export interface HostHistory {
   disk_read_bps: number[];
   disk_write_bps: number[];
   ping_ms: number[];
+  cpu_temp_c: number[];
+  gpu_igpu_used_bytes: number[];
+  gpu_dgpu_used_bytes: number[];
 }
 
 export interface DiskInfo {

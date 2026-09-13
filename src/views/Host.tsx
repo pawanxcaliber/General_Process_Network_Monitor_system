@@ -1,7 +1,7 @@
 import { Component, For, Show, createSignal } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { hostStore } from "@/stores/hostStore";
-import { fmtBps, fmtBytes } from "@/lib/format";
+import { fmtBps, fmtBytes, fmtMem } from "@/lib/format";
 import { portOwner } from "@/lib/ports";
 import type { ProcessSortKey } from "@/types";
 
@@ -187,15 +187,26 @@ export const Host: Component = () => {
           <h3 class="text-xs text-ink-700 uppercase tracking-wider">
             Processes ({host()?.processes.length ?? 0})
           </h3>
-          <select
-            class="text-[10px] font-mono text-ink-700 bg-surface-800 border border-surface-700 rounded px-1.5 py-0.5 outline-none cursor-pointer"
-            value={sortKey()}
-            onChange={(e) => changeSort(e.currentTarget.value as ProcessSortKey)}
-          >
-            <For each={SORT_OPTIONS}>
-              {(o) => <option value={o.key}>sorted by {o.label}</option>}
-            </For>
-          </select>
+          <div class="relative">
+            <select
+              class="appearance-none text-[10px] font-mono text-ink-100 bg-surface-800 border border-surface-700 rounded pl-2 pr-6 py-0.5 outline-none cursor-pointer"
+              value={sortKey()}
+              onChange={(e) => changeSort(e.currentTarget.value as ProcessSortKey)}
+            >
+              <For each={SORT_OPTIONS}>
+                {(o) => <option value={o.key}>sorted by {o.label}</option>}
+              </For>
+            </select>
+            <svg
+              class="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-ink-700"
+              viewBox="0 0 12 12"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path d="M2.5 4.5 6 8l3.5-3.5" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </div>
         </div>
         <div class="max-h-[363px] overflow-y-auto">
           <table class="w-full text-sm">
@@ -245,10 +256,10 @@ export const Host: Component = () => {
                       <span class="text-info">↑{fmtBps(p.net_tx_bps)}</span>
                     </td>
                     <td class="px-2 py-2 text-right text-ink-100">
-                      {p.gpu_igpu_bytes ? fmtBytes(p.gpu_igpu_bytes, 0) : "—"}
+                      {p.gpu_igpu_bytes ? fmtMem(p.gpu_igpu_bytes) : "—"}
                     </td>
                     <td class="px-4 py-2 text-right text-ink-100">
-                      {p.gpu_dgpu_bytes ? fmtBytes(p.gpu_dgpu_bytes, 0) : "—"}
+                      {p.gpu_dgpu_bytes ? fmtMem(p.gpu_dgpu_bytes) : "—"}
                     </td>
                   </tr>
                 )}
