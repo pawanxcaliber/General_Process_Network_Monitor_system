@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+use sysinfo::Components;
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Default)]
@@ -8,87 +9,73 @@ pub struct TempSnapshot {
     pub gpu_c: Option<f64>,
 }
 
-/// Polls system temperatures every 2s from `/sys/class/hwmon`.
+/// Polls system temperatures every 2s via `sysinfo`'s cross-platform
+/// components (hwmon on Linux, WMI on Windows, SMC/IOKit on macOS).
 pub async fn start_temp_poll(cache: Arc<RwLock<TempSnapshot>>) {
     loop {
-        let snap = scan_temps();
+        let snap = tokio::task::spawn_blocking(scan_temps)
+            .await
+            .unwrap_or_default();
         *cache.write().await = snap;
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
 
 pub fn scan_temps() -> TempSnapshot {
-    let mut snap = TempSnapshot::default();
-    let Ok(entries) = std::fs::read_dir("/sys/class/hwmon") else {
-        return snap;
-    };
+    let components = Components::new_with_refreshed_list();
 
-    // CPU temp by chip priority; gpu temp from amdgpu/nouveau/i915.
-    let cpu_priority = ["k10temp", "zenpower", "coretemp", "cpu_thermal", "acpitz"];
-    let mut best_cpu_rank: Option<usize> = None;
+    let mut cpu: Option<(usize, f64)> = None;
+    let mut gpu: Option<f64> = None;
+    let mut hottest = f64::MIN;
 
-    for e in entries.flatten() {
-        let name = std::fs::read_to_string(e.path().join("name"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-
-        let temps = read_temps(&e.path());
-        if temps.is_empty() {
+    for c in &components {
+        let Some(t) = c
+            .temperature()
+            .map(|t| t as f64)
+            .filter(|t| t.is_finite() && *t > 0.0 && *t < 200.0)
+        else {
             continue;
-        }
-        let max_temp = temps.iter().copied().fold(f64::MIN, f64::max);
+        };
+        hottest = hottest.max(t);
 
-        if let Some(rank) = cpu_priority.iter().position(|p| *p == name) {
-            if best_cpu_rank.map_or(true, |r| rank < r) {
-                best_cpu_rank = Some(rank);
-                snap.cpu_c = Some(max_temp);
+        let label = c.label().to_lowercase();
+        if let Some(rank) = cpu_rank(&label) {
+            if cpu.map_or(true, |(r, _)| rank < r) {
+                cpu = Some((rank, t));
             }
         }
-
-        match name.as_str() {
-            "amdgpu" | "nouveau" | "i915" | "radeon" => {
-                if snap.gpu_c.is_none_or(|g| max_temp < g) {
-                    snap.gpu_c = Some(max_temp);
-                }
-            }
-            _ => {}
+        if is_gpu(&label) {
+            gpu = Some(gpu.map_or(t, |g| g.max(t)));
         }
     }
 
-    // Fallback: no known CPU chip found, use the hottest sensor.
-    if snap.cpu_c.is_none() {
-        if let Ok(entries) = std::fs::read_dir("/sys/class/hwmon") {
-            let mut all = Vec::new();
-            for e in entries.flatten() {
-                all.extend(read_temps(&e.path()));
-            }
-            if !all.is_empty() {
-                snap.cpu_c = Some(all.into_iter().fold(f64::MIN, f64::max));
-            }
-        }
+    TempSnapshot {
+        cpu_c: cpu
+            .map(|(_, t)| t)
+            .or_else(|| (hottest > f64::MIN).then_some(hottest)),
+        gpu_c: gpu,
     }
-    snap
 }
 
-/// Reads all `tempN_input` files (millidegrees C) in a hwmon dir.
-fn read_temps(hwmon_dir: &std::path::Path) -> Vec<f64> {
-    let mut temps = Vec::new();
-    let Ok(entries) = std::fs::read_dir(hwmon_dir) else {
-        return temps;
-    };
-    for e in entries.flatten() {
-        let fname = e.file_name().to_string_lossy().to_string();
-        if fname.starts_with("temp") && fname.ends_with("_input") {
-            if let Some(v) = read_trimmed(&e.path()).and_then(|s| s.parse::<f64>().ok()) {
-                temps.push(v / 1000.0);
-            }
-        }
-    }
-    temps
+/// Ranks CPU sensor labels; lower is a better match.
+fn cpu_rank(label: &str) -> Option<usize> {
+    const KEYS: &[&str] = &[
+        "k10temp",
+        "zenpower",
+        "coretemp",
+        "tctl",
+        "tdie",
+        "package id",
+        "cpu package",
+        "cpu",
+        "soc",
+        "computer",
+    ];
+    KEYS.iter().position(|k| label.contains(k))
 }
 
-fn read_trimmed(p: &std::path::Path) -> Option<String> {
-    std::fs::read_to_string(p)
-        .ok()
-        .map(|s| s.trim().to_string())
+fn is_gpu(label: &str) -> bool {
+    ["amdgpu", "gpu", "nouveau", "i915", "radeon", "edge"]
+        .iter()
+        .any(|k| label.contains(k))
 }
