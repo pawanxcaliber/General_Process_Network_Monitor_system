@@ -1,30 +1,16 @@
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::RwLock;
 
-/// Per-PID GPU memory split by GPU class (integrated, discrete), in bytes.
-pub type GpuUsage = (u64, u64);
+use super::{GpuSnapshot, GpuUsage};
 
-#[derive(Debug, Clone, Default)]
-pub struct GpuSnapshot {
-    pub per_pid: HashMap<u32, GpuUsage>,
-    pub igpu_used_bytes: u64,
-    pub dgpu_used_bytes: u64,
-    pub igpu_present: bool,
-    pub dgpu_present: bool,
-    /// True when a discrete GPU exists but its driver is not loaded/usable.
-    pub dgpu_driver_unavailable: bool,
-}
-
-/// Polls per-process GPU memory usage every 5s, split by GPU class
-/// (DRM fdinfo covers AMD/Intel/newer NVIDIA, nvidia-smi covers the rest).
-pub async fn start_gpu_poll(cache: Arc<RwLock<GpuSnapshot>>) {
-    loop {
-        let snap = scan_gpu_full().await;
-        *cache.write().await = snap;
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    }
+/// Linux backend: `/sys/bus/pci` for adapter classification, `/proc/<pid>/fdinfo`
+/// DRM stats for per-process usage, and nvidia-smi for NVIDIA cards.
+pub async fn scan() -> GpuSnapshot {
+    let (mut snap, nv_ok) = tokio::join!(scan_gpu(), nvidia_driver_available());
+    let (igpu_present, dgpu_present, _) = scan_presence().await;
+    snap.igpu_present = igpu_present;
+    snap.dgpu_present = dgpu_present;
+    snap.dgpu_driver_unavailable = dgpu_present && !nv_ok && snap.dgpu_used_bytes == 0;
+    snap
 }
 
 pub async fn scan_gpu() -> GpuSnapshot {
@@ -240,9 +226,8 @@ async fn nvidia_driver_available() -> bool {
 }
 
 /// Presence flags come from the PCI hardware scan, not from usage, so an
-/// idle iGPU still counts as present. `dgpu_driver_unavailable` is set when
-/// discrete NVIDIA hardware exists but the driver is not loaded.
-pub async fn scan_presence() -> (bool, bool, bool) {
+/// idle iGPU still counts as present.
+async fn scan_presence() -> (bool, bool, bool) {
     tokio::task::spawn_blocking(|| {
         let gpus = scan_pci_gpus();
         let igpu = gpus.values().any(|g| !g.is_discrete);
@@ -251,15 +236,4 @@ pub async fn scan_presence() -> (bool, bool, bool) {
     })
     .await
     .unwrap_or((false, false, false))
-}
-
-/// Full snapshot: per-pid usage from fdinfo + presence from PCI scan +
-/// NVIDIA driver liveness check.
-pub async fn scan_gpu_full() -> GpuSnapshot {
-    let (mut snap, nv_ok) = tokio::join!(scan_gpu(), nvidia_driver_available());
-    let (igpu_present, dgpu_present, _) = scan_presence().await;
-    snap.igpu_present = igpu_present;
-    snap.dgpu_present = dgpu_present;
-    snap.dgpu_driver_unavailable = dgpu_present && !nv_ok && snap.dgpu_used_bytes == 0;
-    snap
 }
