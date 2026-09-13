@@ -8,47 +8,52 @@ use crate::types::RuntimeKind;
 pub async fn connect_for(kind: RuntimeKind) -> Result<(Docker, String), String> {
     match kind {
         RuntimeKind::Docker => {
+            if let Some(path) = crate::engine::detect::docker_socket() {
+                let d = connect_path(&path)?;
+                return Ok((d, path));
+            }
             let d = Docker::connect_with_local_defaults()
                 .map_err(|e| format!("docker connect: {}", e))?;
             Ok((d, "local defaults".to_string()))
         }
         RuntimeKind::Podman => {
-            #[cfg(unix)]
-            {
-                let candidates: Vec<String> = [
-                    std::env::var("XDG_RUNTIME_DIR")
-                        .ok()
-                        .map(|d| format!("{}/podman/podman.sock", d)),
-                    Some("/run/podman/podman.sock".to_string()),
-                    dirs::home_dir()
-                        .map(|h| format!("{}/.local/share/containers/podman.sock", h.display())),
-                ]
+            if let Some(path) = crate::engine::detect::podman_socket_candidates()
                 .into_iter()
-                .flatten()
-                .collect();
-
-                for path in candidates {
-                    if std::path::Path::new(&path).exists() {
-                        let d = Docker::connect_with_unix(&path, 120, &bollard::API_DEFAULT_VERSION)
-                            .map_err(|e| format!("podman connect: {}", e))?;
-                        return Ok((d, path));
-                    }
-                }
-                Err("podman socket not found".to_string())
+                .find(|p| std::path::Path::new(p).exists())
+            {
+                let d = connect_path(&path)?;
+                return Ok((d, path));
             }
 
             #[cfg(target_os = "windows")]
             {
-                let d = Docker::connect_with_named_pipe(r"\\.\pipe\podman", 120, &bollard::API_DEFAULT_VERSION)
-                    .map_err(|e| format!("podman connect: {}", e))?;
-                Ok((d, r"\\.\pipe\podman".to_string()))
+                let d = Docker::connect_with_named_pipe(
+                    r"\\.\pipe\podman",
+                    120,
+                    &bollard::API_DEFAULT_VERSION,
+                )
+                .map_err(|e| format!("podman connect: {}", e))?;
+                return Ok((d, r"\\.\pipe\podman".to_string()));
             }
 
-            #[cfg(all(not(unix), not(target_os = "windows")))]
-            Err("podman unsupported on this platform".to_string())
+            #[cfg(not(target_os = "windows"))]
+            Err("podman socket not found".to_string())
         }
         _ => Err("not a docker-like runtime".to_string()),
     }
+}
+
+/// Connects to a Docker-compatible endpoint (unix socket or Windows named pipe).
+#[cfg(unix)]
+fn connect_path(path: &str) -> Result<Docker, String> {
+    Docker::connect_with_unix(path, 120, &bollard::API_DEFAULT_VERSION)
+        .map_err(|e| format!("connect {}: {}", path, e))
+}
+
+#[cfg(target_os = "windows")]
+fn connect_path(path: &str) -> Result<Docker, String> {
+    Docker::connect_with_named_pipe(path, 120, &bollard::API_DEFAULT_VERSION)
+        .map_err(|e| format!("connect {}: {}", path, e))
 }
 
 pub struct ContainerStats {

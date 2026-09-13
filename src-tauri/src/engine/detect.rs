@@ -23,22 +23,7 @@ fn find_in_path(cmd: &str) -> Option<PathBuf> {
 }
 
 async fn detect_docker() -> RuntimeStatus {
-    let mut socket: Option<String> = None;
-
-    #[cfg(unix)]
-    {
-        if std::path::Path::new("/var/run/docker.sock").exists() {
-            socket = Some("/var/run/docker.sock".to_string());
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if std::fs::metadata(r"\\.\pipe\docker_engine").is_ok() {
-            socket = Some(r"\\.\pipe\docker_engine".to_string());
-        }
-    }
-
+    let socket = docker_socket();
     let active = socket.is_some();
     RuntimeStatus {
         kind: RuntimeKind::Docker,
@@ -49,37 +34,73 @@ async fn detect_docker() -> RuntimeStatus {
     }
 }
 
-async fn detect_podman() -> RuntimeStatus {
-    let mut socket: Option<String> = None;
+/// Locates the Docker daemon socket/pipe for the current platform.
+pub fn docker_socket() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        if std::fs::metadata(r"\\.\pipe\docker_engine").is_ok() {
+            return Some(r"\\.\pipe\docker_engine".to_string());
+        }
+        None
+    }
 
     #[cfg(unix)]
     {
-        let candidates: Vec<String> = [
-            std::env::var("XDG_RUNTIME_DIR")
-                .ok()
-                .map(|d| format!("{}/podman/podman.sock", d)),
-            Some("/run/podman/podman.sock".to_string()),
-            dirs::home_dir()
-                .map(|h| format!("{}/.local/share/containers/podman.sock", h.display())),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        if let Ok(host) = std::env::var("DOCKER_HOST") {
+            if let Some(p) = host.strip_prefix("unix://") {
+                if std::path::Path::new(p).exists() {
+                    return Some(p.to_string());
+                }
+            }
+        }
+        let mut candidates = vec!["/var/run/docker.sock".to_string()];
+        if let Some(h) = dirs::home_dir() {
+            // Docker Desktop on macOS.
+            candidates.push(h.join(".docker/run/docker.sock").display().to_string());
+            candidates.push(h.join(".docker/desktop/docker.sock").display().to_string());
+        }
+        candidates
+            .into_iter()
+            .find(|p| std::path::Path::new(p).exists())
+    }
+}
 
-        for c in candidates {
-            if std::path::Path::new(&c).exists() {
-                socket = Some(c);
-                break;
+/// Candidate Podman socket paths (Linux rootless/rootful + macOS Podman machine).
+pub fn podman_socket_candidates() -> Vec<String> {
+    let mut v = Vec::new();
+    if let Ok(d) = std::env::var("XDG_RUNTIME_DIR") {
+        v.push(format!("{}/podman/podman.sock", d));
+    }
+    v.push("/run/podman/podman.sock".to_string());
+    if let Some(h) = dirs::home_dir() {
+        v.push(
+            h.join(".local/share/containers/podman.sock")
+                .display()
+                .to_string(),
+        );
+        // macOS Podman machine layouts (Podman 4.5+ flat, older per-vm dirs).
+        let base = h.join(".local/share/containers/podman/machine");
+        v.push(base.join("podman.sock").display().to_string());
+        if let Ok(entries) = std::fs::read_dir(&base) {
+            for e in entries.flatten() {
+                v.push(e.path().join("podman.sock").display().to_string());
             }
         }
     }
+    v
+}
+
+async fn detect_podman() -> RuntimeStatus {
+    let socket = podman_socket_candidates()
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists());
 
     #[cfg(target_os = "windows")]
-    {
-        if std::fs::metadata(r"\\.\pipe\podman").is_ok() {
-            socket = Some(r"\\.\pipe\podman".to_string());
-        }
-    }
+    let socket = socket.or_else(|| {
+        std::fs::metadata(r"\\.\pipe\podman")
+            .is_ok()
+            .then(|| r"\\.\pipe\podman".to_string())
+    });
 
     RuntimeStatus {
         kind: RuntimeKind::Podman,
@@ -180,8 +201,15 @@ async fn detect_vm() -> RuntimeStatus {
     #[cfg(unix)]
     {
         let virsh = find_in_path("virsh");
-        let socket = std::path::Path::new("/var/run/libvirt/libvirt-sock").exists()
-            || std::path::Path::new("/run/libvirt/libvirt-sock").exists();
+        // Linux distro paths + Homebrew (Apple Silicon and Intel macOS).
+        let socket = [
+            "/var/run/libvirt/libvirt-sock",
+            "/run/libvirt/libvirt-sock",
+            "/opt/homebrew/var/run/libvirt/libvirt-sock",
+            "/usr/local/var/run/libvirt/libvirt-sock",
+        ]
+        .iter()
+        .any(|p| std::path::Path::new(p).exists());
         if virsh.is_some() && socket {
             hyps.push("libvirt".to_string());
         }
