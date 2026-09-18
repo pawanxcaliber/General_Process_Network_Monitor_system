@@ -40,7 +40,7 @@ pub fn scan_temps() -> TempSnapshot {
 
         let label = c.label().to_lowercase();
         if let Some(rank) = cpu_rank(&label) {
-            if cpu.map_or(true, |(r, _)| rank < r) {
+            if cpu.is_none_or(|(r, _)| rank < r) {
                 cpu = Some((rank, t));
             }
         }

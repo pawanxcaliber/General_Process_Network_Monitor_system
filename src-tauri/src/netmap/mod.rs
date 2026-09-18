@@ -178,6 +178,12 @@ pub struct Collector {
     cache: HashMap<String, CachedNode>,
 }
 
+impl Default for Collector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Collector {
     pub fn new() -> Self {
         Self {
@@ -331,7 +337,7 @@ impl Collector {
             }
         }
 
-        for (_key, ep) in &endpoints {
+        for ep in endpoints.values() {
             if ep.listeners.is_empty() {
                 continue;
             }
@@ -402,9 +408,7 @@ impl Collector {
 
         for e in &ip_refs.alive {
             let id = e.id();
-            if !nodes.contains_key(&id) {
-                nodes.insert(id, (e.clone(), e.node()));
-            }
+            nodes.entry(id).or_insert_with(|| (e.clone(), e.node()));
         }
 
         NetworkMapPayload {
@@ -686,7 +690,7 @@ fn cap_external(
 }
 
 pub async fn start_network_map_poll(
-    app: AppHandle,
+    app: Option<AppHandle>,
     snapshots: SnapshotsMap,
     cache: Arc<RwLock<NetworkMapPayload>>,
     interval: Duration,
@@ -697,6 +701,8 @@ pub async fn start_network_map_poll(
         let ip_refs = gather_ip_refs(&snapshots).await;
         let payload = collector.collect(&ip_refs);
         *cache.write().await = payload.clone();
-        let _ = app.emit("network-map-tick", &payload);
+        if let Some(app) = &app {
+            let _ = app.emit("network-map-tick", &payload);
+        }
     }
 }

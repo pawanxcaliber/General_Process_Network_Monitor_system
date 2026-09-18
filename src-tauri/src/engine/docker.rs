@@ -46,7 +46,7 @@ pub async fn connect_for(kind: RuntimeKind) -> Result<(Docker, String), String> 
 /// Connects to a Docker-compatible endpoint (unix socket or Windows named pipe).
 #[cfg(unix)]
 fn connect_path(path: &str) -> Result<Docker, String> {
-    Docker::connect_with_unix(path, 120, &bollard::API_DEFAULT_VERSION)
+    Docker::connect_with_unix(path, 120, bollard::API_DEFAULT_VERSION)
         .map_err(|e| format!("connect {}: {}", path, e))
 }
 

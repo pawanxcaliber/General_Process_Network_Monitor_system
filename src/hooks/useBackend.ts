@@ -1,6 +1,6 @@
 import { onMount, onCleanup } from "solid-js";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
+import { appListen as listen, type UnlistenFn } from "@/lib/transport";
+import { appInvoke as invoke } from "@/lib/transport";
 import { hostStore, runtimeStore, engineStore, networkMapStore } from "@/stores";
 import type {
   HostPayload,

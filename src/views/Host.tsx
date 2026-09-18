@@ -1,5 +1,5 @@
 import { Component, For, Show, createSignal } from "solid-js";
-import { invoke } from "@tauri-apps/api/core";
+import { appInvoke as invoke } from "@/lib/transport";
 import { hostStore } from "@/stores/hostStore";
 import { fmtBps, fmtBytes, fmtMem } from "@/lib/format";
 import { portOwner } from "@/lib/ports";

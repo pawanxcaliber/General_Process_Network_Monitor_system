@@ -26,3 +26,10 @@ k8s-openapi = { version = "0.24", features = ["v1_32"] }
 schemars = "0.8"
 dirs = "6"
 chrono = "0.4"
+ratatui = "0.29"
+crossterm = "0.28"
+axum = { version = "0.8", features = ["ws"] }
+include_dir = "0.7"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

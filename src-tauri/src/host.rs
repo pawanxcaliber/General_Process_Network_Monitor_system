@@ -18,7 +18,7 @@ fn push_capped(v: &mut Vec<f64>, x: f64) {
 }
 
 pub async fn start_host_polling(
-    app: AppHandle,
+    app: Option<AppHandle>,
     cache: Arc<RwLock<HostPayload>>,
     ping_cache: Arc<RwLock<Option<f64>>>,
     gpu_cache: Arc<RwLock<crate::gpu::GpuSnapshot>>,
@@ -156,6 +156,10 @@ pub async fn start_host_polling(
         let temp_snap = temp_cache.read().await.clone();
         let sort = *sort_key.read().await;
 
+        // gnome-system-monitor style scale: % of total machine capacity
+        // (100% = all cores), not % of a single core.
+        let ncpu = sys.cpus().len().max(1) as f32;
+
         let mut processes: Vec<ProcessInfo> = sys
             .processes()
             .iter()
@@ -165,7 +169,7 @@ pub async fn start_host_polling(
                 ProcessInfo {
                     pid: pid.as_u32(),
                     name: p.name().to_string_lossy().to_string(),
-                    cpu_percent: p.cpu_usage(),
+                    cpu_percent: p.cpu_usage() / ncpu,
                     memory_bytes: p.memory(),
                     disk_read_bps: du.read_bytes as f64 / elapsed,
                     disk_write_bps: du.written_bytes as f64 / elapsed,
@@ -223,7 +227,9 @@ pub async fn start_host_polling(
         };
 
         *cache.write().await = payload.clone();
-        let _ = app.emit("host-metrics-tick", &payload);
+        if let Some(app) = &app {
+            let _ = app.emit("host-metrics-tick", &payload);
+        }
     }
 }
 

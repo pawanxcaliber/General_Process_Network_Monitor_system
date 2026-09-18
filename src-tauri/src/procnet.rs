@@ -11,6 +11,12 @@ pub struct ProcNetRates {
     pub tx_bps: HashMap<u32, f64>,
 }
 
+impl Default for ProcNetState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProcNetState {
     pub fn new() -> Self {
         Self {

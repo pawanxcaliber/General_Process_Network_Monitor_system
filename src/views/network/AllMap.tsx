@@ -1,11 +1,13 @@
 import { Component, For, Show, createMemo, createSignal } from "solid-js";
 import { runtimeStore } from "@/stores/runtimeStore";
 import { networkMapStore } from "@/stores/networkMapStore";
+import { hostStore } from "@/stores/hostStore";
 import { TopologyCanvas } from "@/components/topology/TopologyCanvas";
 import { TopologyNodePanel } from "@/components/topology/TopologyNodePanel";
 import type {
   NetworkMapPayload,
   NodeMetrics,
+  ProcessInfo,
   RuntimeKind,
   RuntimeSnapshot,
   TopologyEdge,
@@ -128,17 +130,29 @@ function mergeTopology(
 
   const nm = nmParam ?? networkMapStore.map();
   if (nm) {
+    const h = hostStore.host();
+    const procByPid = new Map<number, ProcessInfo>();
+    for (const p of h?.processes ?? []) procByPid.set(p.pid, p);
     for (const n of nm.nodes) {
       if (n.kind !== "process" && n.kind !== "system") continue;
       const key = n.kind === "system" ? "system" : "apps";
       origin.set(n.id, key);
+      const pid = n.id.startsWith("proc:") ? Number(n.id.slice(5)) : null;
+      const proc = pid != null ? procByPid.get(pid) : undefined;
       nodes.push({
         id: n.id,
         name: n.label,
         kind: "process",
         status: "running",
         image: n.detail ?? undefined,
-        metrics: { cpu_percent: 0, memory_bytes: 0, rx_rate_bps: 0, tx_rate_bps: 0 },
+        metrics: {
+          cpu_percent:
+            proc?.cpu_percent ??
+            (n.kind === "system" ? (h?.cpu_percent ?? 0) : 0),
+          memory_bytes: proc?.memory_bytes ?? (n.kind === "system" ? (h?.ram_used_bytes ?? 0) : 0),
+          rx_rate_bps: n.rx_bps,
+          tx_rate_bps: n.tx_bps,
+        },
         ports: n.listeners.slice(0, 6).map((p) => ({ container_port: p, proto: "tcp" })),
       });
       edges.push({

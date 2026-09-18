@@ -5,7 +5,22 @@ use tauri::{AppHandle, Emitter};
 
 use crate::types::LogLine;
 
+/// Consumes log lines from a container. GUI mode forwards them to the
+/// frontend via the Tauri event `container-logs:{kind}:{id}`.
 pub async fn stream_logs(app: AppHandle, docker: Docker, kind: String, container_id: String) {
+    let event = format!("container-logs:{}:{}", kind, container_id);
+    follow_logs(docker, kind, container_id, move |line| {
+        let _ = app.emit(&event, &line);
+    })
+    .await;
+}
+
+/// Runtime-agnostic log follower used by both GUI and CLI mode.
+pub async fn follow_logs<F>(docker: Docker, kind: String, container_id: String, mut on_line: F)
+where
+    F: FnMut(LogLine) + Send,
+{
+    let _context = kind;
     let opts: LogsOptions<String> = LogsOptions {
         follow: true,
         stdout: true,
@@ -15,7 +30,6 @@ pub async fn stream_logs(app: AppHandle, docker: Docker, kind: String, container
         ..Default::default()
     };
 
-    let event = format!("container-logs:{}:{}", kind, container_id);
     let mut stream = docker.logs(&container_id, Some(opts));
 
     while let Some(item) = stream.next().await {
@@ -31,22 +45,18 @@ pub async fn stream_logs(app: AppHandle, docker: Docker, kind: String, container
         };
         let full = String::from_utf8_lossy(&message).to_string();
         let (ts, text) = split_timestamp(&full);
-        let line = LogLine {
+        on_line(LogLine {
             stream: kind.to_string(),
             ts: Some(ts),
             text,
-        };
-        let _ = app.emit(&event, &line);
+        });
     }
 
-    let _ = app.emit(
-        &event,
-        &LogLine {
-            stream: "status".to_string(),
-            ts: None,
-            text: "__EOF__".to_string(),
-        },
-    );
+    on_line(LogLine {
+        stream: "status".to_string(),
+        ts: None,
+        text: "__EOF__".to_string(),
+    });
 }
 
 fn split_timestamp(full: &str) -> (String, String) {

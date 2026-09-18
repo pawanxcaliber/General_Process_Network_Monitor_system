@@ -72,7 +72,6 @@ async fn libvirt_vms() -> (Vec<VmInfo>, &'static str, bool) {
                         vcpus = v.trim().parse().unwrap_or(0);
                     } else if let Some(v) = line.strip_prefix("Max memory:") {
                         mem_kib = v
-                            .trim()
                             .split_whitespace()
                             .next()
                             .and_then(|x| x.parse().ok())

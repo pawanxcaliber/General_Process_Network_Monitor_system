@@ -15,19 +15,21 @@ type StatesMap = Arc<Mutex<HashMap<RuntimeKind, Arc<RwLock<RuntimeState>>>>>;
 type SnapshotsMap = Arc<RwLock<HashMap<RuntimeKind, RuntimeSnapshot>>>;
 
 async fn emit_snapshot(
-    app: &AppHandle,
+    app: &Option<AppHandle>,
     cache: &SnapshotsMap,
     kind: RuntimeKind,
     snapshot: RuntimeSnapshot,
 ) {
     cache.write().await.insert(kind, snapshot.clone());
-    let _ = app.emit(
-        "runtime-tick",
-        &RuntimeTick {
-            kind,
-            snapshot,
-        },
-    );
+    if let Some(app) = app {
+        let _ = app.emit(
+            "runtime-tick",
+            &RuntimeTick {
+                kind,
+                snapshot,
+            },
+        );
+    }
 }
 
 fn map_node_status(state: &str) -> NodeStatus {
@@ -39,18 +41,32 @@ fn map_node_status(state: &str) -> NodeStatus {
     }
 }
 
+pub type HostCache = Arc<RwLock<crate::types::HostPayload>>;
+
+/// Real host-level metrics (CPU, RAM, aggregate NIC rates) for the `host`
+/// topology node, so runtime maps don't render all-zero host stats.
+fn host_node_metrics(host: &crate::types::HostPayload) -> NodeMetrics {
+    NodeMetrics {
+        cpu_percent: host.cpu_percent as f64,
+        memory_bytes: host.ram_used_bytes,
+        rx_rate_bps: host.interfaces.iter().map(|i| i.rx_bps).sum(),
+        tx_rate_bps: host.interfaces.iter().map(|i| i.tx_bps).sum(),
+    }
+}
+
 pub async fn start_docker_like_poll(
-    app: AppHandle,
+    app: Option<AppHandle>,
     kind: RuntimeKind,
     states: StatesMap,
     snapshots: SnapshotsMap,
     interval: Duration,
+    host_cache: HostCache,
 ) {
     let state_arc = {
         let m = states.lock().await;
         m.get(&kind).cloned().unwrap_or_else(|| {
-            let arc = Arc::new(RwLock::new(RuntimeState::new(kind)));
-            arc
+            
+            Arc::new(RwLock::new(RuntimeState::new(kind)))
         })
     };
 
@@ -76,8 +92,16 @@ pub async fn start_docker_like_poll(
         };
 
         match result {
-            Ok(snapshot) => {
+            Ok(mut snapshot) => {
                 state_arc.write().await.ok = true;
+                let host = host_cache.read().await.clone();
+                if let Some(n) = snapshot
+                    .nodes
+                    .iter_mut()
+                    .find(|n| n.kind == NodeKind::Host)
+                {
+                    n.metrics = host_node_metrics(&host);
+                }
                 emit_snapshot(&app, &snapshots, kind, snapshot).await;
             }
             Err(e) => {
@@ -394,12 +418,12 @@ async fn collect_docker_like(
                 cpu: state
                     .cpu_hist
                     .get(&b.id)
-                    .map(|d| d.iter().copied().collect())
+                    .map(|d| d.to_vec())
                     .unwrap_or_default(),
                 mem_bytes: state
                     .mem_hist
                     .get(&b.id)
-                    .map(|d| d.iter().copied().collect())
+                    .map(|d| d.to_vec())
                     .unwrap_or_default(),
             },
         });
@@ -452,7 +476,7 @@ async fn collect_docker_like(
 }
 
 pub async fn start_k8s_poll(
-    app: AppHandle,
+    app: Option<AppHandle>,
     states: StatesMap,
     snapshots: SnapshotsMap,
     interval: Duration,
@@ -616,10 +640,11 @@ fn build_k8s_snapshot(
 }
 
 pub async fn start_vm_poll(
-    app: AppHandle,
+    app: Option<AppHandle>,
     states: StatesMap,
     snapshots: SnapshotsMap,
     interval: Duration,
+    host_cache: HostCache,
 ) {
     let state_arc = {
         let m = states.lock().await;
@@ -689,7 +714,7 @@ pub async fn start_vm_poll(
         s.ok = available;
         s.detail = detail.clone();
 
-        let snapshot = RuntimeSnapshot {
+        let mut snapshot = RuntimeSnapshot {
             kind: Some(RuntimeKind::Vm),
             available,
             detail,
@@ -703,6 +728,14 @@ pub async fn start_vm_poll(
             metrics_available: false,
             history: s.agg.clone(),
         };
+        drop(s);
+        if let Some(n) = snapshot
+            .nodes
+            .iter_mut()
+            .find(|n| n.kind == NodeKind::Host)
+        {
+            n.metrics = host_node_metrics(&host_cache.read().await.clone());
+        }
 
         emit_snapshot(&app, &snapshots, RuntimeKind::Vm, snapshot).await;
     }

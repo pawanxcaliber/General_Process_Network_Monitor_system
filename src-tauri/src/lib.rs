@@ -1,4 +1,6 @@
+pub mod cli;
 pub mod engine;
+pub mod server;
 pub mod gpu;
 pub mod host;
 pub mod netmap;
@@ -19,6 +21,21 @@ use tauri::{AppHandle, Emitter, Manager};
 use engine::{logs, RuntimeKind, RuntimeState};
 use types::{HostPayload, LogLine, NetworkMapPayload, ProcessSortKey, RuntimeSnapshot, RuntimeStatus};
 
+/// Shared backend data: the same caches the GUI state exposes, used by both
+/// the Tauri event loop and the CLI's TUI.
+#[derive(Clone)]
+pub struct Backend {
+    pub states: Arc<Mutex<HashMap<RuntimeKind, Arc<RwLock<RuntimeState>>>>>,
+    pub snapshots: Arc<RwLock<HashMap<RuntimeKind, RuntimeSnapshot>>>,
+    pub host: Arc<RwLock<HostPayload>>,
+    pub netmap: Arc<RwLock<NetworkMapPayload>>,
+    pub ping: Arc<RwLock<Option<f64>>>,
+    pub gpu: Arc<RwLock<gpu::GpuSnapshot>>,
+    pub temp: Arc<RwLock<temp::TempSnapshot>>,
+    pub sort_key: Arc<RwLock<ProcessSortKey>>,
+}
+
+/// App-wide state managed by Tauri (`AppState` in the frontend contract).
 pub struct AppState {
     pub states: Arc<Mutex<HashMap<RuntimeKind, Arc<RwLock<RuntimeState>>>>>,
     pub snapshots: Arc<RwLock<HashMap<RuntimeKind, RuntimeSnapshot>>>,
@@ -125,126 +142,173 @@ async fn stop_log_stream(
     Ok(())
 }
 
+/// Creates the shared caches used by GUI and CLI mode.
+pub fn new_backend() -> Backend {
+    let mut states_map: HashMap<RuntimeKind, Arc<RwLock<RuntimeState>>> = HashMap::new();
+    for kind in [
+        RuntimeKind::Docker,
+        RuntimeKind::Podman,
+        RuntimeKind::Kubernetes,
+        RuntimeKind::Vm,
+    ] {
+        states_map.insert(kind, Arc::new(RwLock::new(RuntimeState::new(kind))));
+    }
+    Backend {
+        states: Arc::new(Mutex::new(states_map)),
+        snapshots: Arc::new(RwLock::new(HashMap::new())),
+        host: Arc::new(RwLock::new(HostPayload::default())),
+        netmap: Arc::new(RwLock::new(NetworkMapPayload::default())),
+        ping: Arc::new(RwLock::new(None)),
+        gpu: Arc::new(RwLock::new(gpu::GpuSnapshot::default())),
+        temp: Arc::new(RwLock::new(temp::TempSnapshot::default())),
+        sort_key: Arc::new(RwLock::new(ProcessSortKey::Cpu)),
+    }
+}
+
+/// Spawns a background task on the correct runtime: Tauri's async runtime in
+/// GUI mode (its reactor context isn't active for raw `tokio::spawn` at
+/// `setup()` time), a plain tokio spawn in CLI mode.
+fn spawn_bg<F>(app: &Option<AppHandle>, fut: F)
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    match app {
+        Some(_) => {
+            let _ = tauri::async_runtime::spawn(fut);
+        }
+        None => {
+            let _ = tokio::spawn(fut);
+        }
+    }
+}
+
+/// Spawns every background sampler. `app` is `Some` in GUI mode (events are
+/// emitted) and `None` in CLI mode (readers poll the caches directly).
+pub fn spawn_pollers(app: Option<AppHandle>, backend: &Backend) {
+    let Backend {
+        states,
+        snapshots,
+        host: host_cache,
+        netmap: netmap_cache,
+        ping: ping_cache,
+        gpu: gpu_cache,
+        temp: temp_cache,
+        sort_key,
+    } = backend;
+
+    let host_app = app.clone();
+    let host_cache = host_cache.clone();
+    let host_topology1 = host_cache.clone();
+    let ping_task = ping_cache.clone();
+    let gpu_task = gpu_cache.clone();
+    let sort_task = sort_key.clone();
+    let temp_task = temp_cache.clone();
+    let host_topology = host_cache.clone();
+    spawn_bg(&app, async move {
+        host::start_host_polling(
+            host_app,
+            host_cache,
+            ping_task,
+            gpu_task,
+            temp_task,
+            sort_task,
+        )
+        .await;
+    });
+
+    let temp_cache = temp_cache.clone();
+    spawn_bg(&app, async move {
+        temp::start_temp_poll(temp_cache).await;
+    });
+
+    let ping_cache = ping_cache.clone();
+    spawn_bg(&app, async move {
+        ping::start_ping_poll(ping_cache).await;
+    });
+
+    let gpu_cache = gpu_cache.clone();
+    spawn_bg(&app, async move {
+        gpu::start_gpu_poll(gpu_cache).await;
+    });
+
+    for (kind, secs) in [(RuntimeKind::Docker, 2u64), (RuntimeKind::Podman, 2u64)] {
+        let app2 = app.clone();
+        let states2 = states.clone();
+        let snapshots2 = snapshots.clone();
+        let host2 = host_topology1.clone();
+        spawn_bg(&app, async move {
+            topology::start_docker_like_poll(
+                app2,
+                kind,
+                states2,
+                snapshots2,
+                Duration::from_secs(secs),
+                host2,
+            )
+            .await;
+        });
+    }
+
+    let k8s_app = app.clone();
+    let k8s_states = states.clone();
+    let k8s_snapshots = snapshots.clone();
+    spawn_bg(&app, async move {
+        topology::start_k8s_poll(
+            k8s_app,
+            k8s_states,
+            k8s_snapshots,
+            Duration::from_secs(5),
+        )
+        .await;
+    });
+
+    let vm_app = app.clone();
+    let vm_states = states.clone();
+    let vm_snapshots = snapshots.clone();
+    spawn_bg(&app, async move {
+        topology::start_vm_poll(
+            vm_app,
+            vm_states,
+            vm_snapshots,
+            Duration::from_secs(10),
+            host_topology1.clone(),
+        )
+        .await;
+    });
+
+    let netmap_app = app.clone();
+    let netmap_snapshots = snapshots.clone();
+    let netmap_cache = netmap_cache.clone();
+    spawn_bg(&app, async move {
+        netmap::start_network_map_poll(
+            netmap_app,
+            netmap_snapshots,
+            netmap_cache,
+            Duration::from_secs(2),
+        )
+        .await;
+    });
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let app_handle = app.handle().clone();
 
-            let mut states_map: HashMap<RuntimeKind, Arc<RwLock<RuntimeState>>> = HashMap::new();
-            for kind in [
-                RuntimeKind::Docker,
-                RuntimeKind::Podman,
-                RuntimeKind::Kubernetes,
-                RuntimeKind::Vm,
-            ] {
-                states_map.insert(kind, Arc::new(RwLock::new(RuntimeState::new(kind))));
-            }
-            let states = Arc::new(Mutex::new(states_map));
-            let snapshots: Arc<RwLock<HashMap<RuntimeKind, RuntimeSnapshot>>> =
-                Arc::new(RwLock::new(HashMap::new()));
-
-            let host_cache = Arc::new(RwLock::new(HostPayload::default()));
-            let netmap_cache = Arc::new(RwLock::new(NetworkMapPayload::default()));
-            let ping_cache: Arc<RwLock<Option<f64>>> = Arc::new(RwLock::new(None));
-            let gpu_cache: Arc<RwLock<gpu::GpuSnapshot>> =
-                Arc::new(RwLock::new(gpu::GpuSnapshot::default()));
-            let sort_key: Arc<RwLock<ProcessSortKey>> =
-                Arc::new(RwLock::new(ProcessSortKey::Cpu));
-            let temp_cache: Arc<RwLock<temp::TempSnapshot>> =
-                Arc::new(RwLock::new(temp::TempSnapshot::default()));
+            let backend = new_backend();
 
             app.manage(AppState {
-                states: states.clone(),
-                snapshots: snapshots.clone(),
-                latest_host: host_cache.clone(),
-                latest_netmap: netmap_cache.clone(),
+                states: backend.states.clone(),
+                snapshots: backend.snapshots.clone(),
+                latest_host: backend.host.clone(),
+                latest_netmap: backend.netmap.clone(),
                 log_streams: Arc::new(Mutex::new(HashMap::new())),
-                sort_key: sort_key.clone(),
+                sort_key: backend.sort_key.clone(),
             });
 
-            let host_app = app_handle.clone();
-            let host_cache_task = host_cache.clone();
-            let ping_task = ping_cache.clone();
-            let gpu_task = gpu_cache.clone();
-            let sort_task = sort_key.clone();
-            let temp_task = temp_cache.clone();
-            tauri::async_runtime::spawn(async move {
-                host::start_host_polling(
-                    host_app,
-                    host_cache_task,
-                    ping_task,
-                    gpu_task,
-                    temp_task,
-                    sort_task,
-                )
-                .await;
-            });
-
-            let temp_cache_task = temp_cache.clone();
-            tauri::async_runtime::spawn(async move {
-                temp::start_temp_poll(temp_cache_task).await;
-            });
-
-            let ping_cache_task = ping_cache.clone();
-            tauri::async_runtime::spawn(async move {
-                ping::start_ping_poll(ping_cache_task).await;
-            });
-
-            let gpu_cache_task = gpu_cache.clone();
-            tauri::async_runtime::spawn(async move {
-                gpu::start_gpu_poll(gpu_cache_task).await;
-            });
-
-            for (kind, secs) in [(RuntimeKind::Docker, 2u64), (RuntimeKind::Podman, 2u64)] {
-                let app2 = app_handle.clone();
-                let states2 = states.clone();
-                let snapshots2 = snapshots.clone();
-                tauri::async_runtime::spawn(async move {
-                    topology::start_docker_like_poll(
-                        app2,
-                        kind,
-                        states2,
-                        snapshots2,
-                        Duration::from_secs(secs),
-                    )
-                    .await;
-                });
-            }
-
-            let k8s_app = app_handle.clone();
-            let k8s_states = states.clone();
-            let k8s_snapshots = snapshots.clone();
-            tauri::async_runtime::spawn(async move {
-                topology::start_k8s_poll(
-                    k8s_app,
-                    k8s_states,
-                    k8s_snapshots,
-                    Duration::from_secs(5),
-                )
-                .await;
-            });
-
-            let vm_app = app_handle.clone();
-            let vm_states = states.clone();
-            let vm_snapshots = snapshots.clone();
-            tauri::async_runtime::spawn(async move {
-                topology::start_vm_poll(vm_app, vm_states, vm_snapshots, Duration::from_secs(10))
-                    .await;
-            });
-
-            let netmap_app = app_handle.clone();
-            let netmap_snapshots = snapshots.clone();
-            let netmap_cache_task = netmap_cache.clone();
-            tauri::async_runtime::spawn(async move {
-                netmap::start_network_map_poll(
-                    netmap_app,
-                    netmap_snapshots,
-                    netmap_cache_task,
-                    Duration::from_secs(2),
-                )
-                .await;
-            });
+            spawn_pollers(Some(app_handle.clone()), &backend);
 
             Ok(())
         })
@@ -259,4 +323,26 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// CLI mode: `monitor --cli` runs a btop-style terminal UI sharing the same
+/// backend collectors as the GUI.
+pub async fn run_cli() {
+    let backend = new_backend();
+    cli::start_app(backend).await;
+}
+
+/// Server mode: `monitor --server` serves the web UI from the same backend
+/// over HTTP + WebSocket so it can be opened from any browser.
+pub async fn run_server(
+    bind: std::net::IpAddr,
+    port: u16,
+    token: Option<String>,
+) {
+    let backend = new_backend();
+    spawn_pollers(None, &backend);
+    if let Err(e) = server::run(bind, port, token, backend).await {
+        eprintln!("server error: {e}");
+        std::process::exit(1);
+    }
 }

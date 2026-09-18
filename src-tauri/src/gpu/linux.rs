@@ -30,7 +30,7 @@ pub async fn scan_gpu() -> GpuSnapshot {
         let e = snap.per_pid.entry(pid).or_insert((0, 0));
         e.1 += bytes;
     }
-    for (_, (ig, dg)) in snap.per_pid.iter() {
+    for (ig, dg) in snap.per_pid.values() {
         snap.igpu_used_bytes += ig;
         snap.dgpu_used_bytes += dg;
     }
