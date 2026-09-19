@@ -204,7 +204,7 @@ pub fn spawn_pollers(app: Option<AppHandle>, backend: &Backend) {
     let gpu_task = gpu_cache.clone();
     let sort_task = sort_key.clone();
     let temp_task = temp_cache.clone();
-    let host_topology = host_cache.clone();
+    let _host_topology = host_cache.clone();
     spawn_bg(&app, async move {
         host::start_host_polling(
             host_app,

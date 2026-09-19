@@ -63,7 +63,7 @@ fn parse_args() -> Flags {
         i += 1;
     }
     if f.server.is_some() {
-        let (b, p, tk) = f.server.take().unwrap();
+        let (b, p, _tk) = f.server.take().unwrap();
         f.server = Some((f.bind.unwrap_or(b), f.port.unwrap_or(p), f.token.clone()));
     }
     f
