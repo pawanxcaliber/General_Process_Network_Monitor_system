@@ -224,8 +224,9 @@ async fn detect_vm() -> RuntimeStatus {
 
     #[cfg(target_os = "windows")]
     {
-        let out = tokio::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", "(Get-VM).Count"])
+        let mut pcmd = tokio::process::Command::new("powershell");
+        pcmd.args(["-NoProfile", "-Command", "(Get-VM).Count"]);
+        let out = crate::platform::exec::set_no_window_t(&mut pcmd)
             .output()
             .await;
         if let Ok(o) = out {

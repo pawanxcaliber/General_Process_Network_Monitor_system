@@ -359,9 +359,13 @@ pub fn kill_pid(pid: u32) {
         libc::kill(pid as i32, libc::SIGTERM);
     }
     #[cfg(windows)]
-    let _ = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/F"])
-        .status();
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .creation_flags(0x0800_0000)
+            .status();
+    }
 }
 
 pub async fn start_app(backend: Backend) {

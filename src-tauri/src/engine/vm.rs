@@ -35,7 +35,11 @@ pub async fn list_vms() -> (Vec<VmInfo>, Vec<String>) {
 }
 
 fn cmd_output(cmd: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(cmd).args(args).output().ok()?;
+    let mut child = std::process::Command::new(cmd);
+    let out = crate::platform::exec::set_no_window(&mut child)
+        .args(args)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }

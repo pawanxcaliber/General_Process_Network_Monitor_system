@@ -50,8 +50,9 @@ async fn tcp_ping_with_retry() -> Option<f64> {
 }
 
 async fn icmp_ping() -> Option<f64> {
-    let out = tokio::process::Command::new("ping")
-        .args(ping_args())
+    let mut cmd = tokio::process::Command::new("ping");
+    cmd.args(ping_args());
+    let out = crate::platform::exec::set_no_window_t(&mut cmd)
         .output()
         .await
         .ok()?;

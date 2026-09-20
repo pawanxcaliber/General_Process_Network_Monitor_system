@@ -6,7 +6,11 @@ use super::{ConnRecord, SockProto};
 /// Cumulative byte counters aren't exposed by netstat, so rates fall back to
 /// zero (connection topology is still complete).
 pub fn connections() -> Vec<ConnRecord> {
-    let Ok(out) = std::process::Command::new("netstat").args(["-ano"]).output() else {
+    let mut cmd = std::process::Command::new("netstat");
+    let Ok(out) = crate::platform::exec::set_no_window(&mut cmd)
+        .args(["-ano"])
+        .output()
+    else {
         return Vec::new();
     };
     let text = String::from_utf8_lossy(&out.stdout);

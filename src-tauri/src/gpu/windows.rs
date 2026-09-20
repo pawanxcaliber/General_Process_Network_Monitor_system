@@ -37,8 +37,9 @@ pub async fn scan() -> GpuSnapshot {
 }
 
 async fn powershell(script: &str) -> Option<String> {
-    let out = tokio::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+    let mut cmd = tokio::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    let out = crate::platform::exec::set_no_window_t(&mut cmd)
         .output()
         .await
         .ok()?;
@@ -122,14 +123,12 @@ async fn process_gpu_mem() -> HashMap<u32, u64> {
 
 /// Fallback: `nvidia-smi` compute apps (NVIDIA only).
 async fn nvidia_map() -> HashMap<u32, u64> {
-    let Ok(out) = tokio::process::Command::new("nvidia-smi")
-        .args([
-            "--query-compute-apps=pid,used_memory",
-            "--format=csv,noheader,nounits",
-        ])
-        .output()
-        .await
-    else {
+    let mut cmd = tokio::process::Command::new("nvidia-smi");
+    cmd.args([
+        "--query-compute-apps=pid,used_memory",
+        "--format=csv,noheader,nounits",
+    ]);
+    let Ok(out) = crate::platform::exec::set_no_window_t(&mut cmd).output().await else {
         return HashMap::new();
     };
     if !out.status.success() {
